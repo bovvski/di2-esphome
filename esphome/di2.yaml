@@ -1,0 +1,243 @@
+# di2-bridge: read Shimano 12-speed Di2 (RD-R7150) battery level over BLE.
+# Flow: RD wakes up -> ESP32 sees its advertising -> connect -> read 180F/2A19 + 180A -> disconnect.
+# No pairing required.
+
+esphome:
+  name: di2-bridge
+
+esp32:
+  board: esp32dev          # change to your board (e.g. esp32-c3-devkitm-1, esp32-s3-devkitc-1)
+  framework:
+    type: esp-idf          # BLE + WiFi is more stable on esp-idf than on arduino
+
+logger:
+  level: DEBUG
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  reboot_timeout: 0s       # no WiFi must not reboot the ESP (BLE keeps working)
+
+api:
+  reboot_timeout: 0s       # no Home Assistant connected must not reboot the ESP
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+    # WiFi and BLE share one radio: pause scanning during OTA, otherwise uploads can stall.
+    on_begin:
+      - esp32_ble_tracker.stop_scan:
+    on_error:
+      - esp32_ble_tracker.start_scan:
+          continuous: true
+
+globals:
+  - id: last_read_ms
+    type: uint32_t
+    initial_value: '0'
+  - id: busy
+    type: bool
+    initial_value: 'false'
+  - id: busy_since_ms
+    type: uint32_t
+    initial_value: '0'
+  - id: reads
+    type: int
+    initial_value: '0'
+  - id: last_seen_ms
+    type: uint32_t
+    initial_value: '0'
+  - id: last_log_ms
+    type: uint32_t
+    initial_value: '0'
+  - id: read_this_wake       # whether we already got a reading during the current wake period
+    type: bool
+    initial_value: 'false'
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: true           # tested: active scanning does not keep the RD awake longer (~15 min)
+    continuous: true
+  on_ble_advertise:
+    then:
+      - lambda: |-
+          // Match the RD by the ble_client MAC (the name may be missing in passive scans).
+          if (x.address_uint64() != id(di2).get_address()) return;
+          const uint32_t now = millis();
+          // New wake period = RD shows up after >60 s of silence (same threshold as "Di2 awake").
+          if (id(last_seen_ms) == 0 || now - id(last_seen_ms) > 60000) {
+            id(read_this_wake) = false;
+            ESP_LOGI("di2", "RD woke up");
+          }
+          id(last_seen_ms) = now;
+          if (!x.get_name().empty()) {
+            std::string n = x.get_name().str();
+            if (id(di2_name).state != n) id(di2_name).publish_state(n);
+          }
+          // Log and publish RSSI every 30 s instead of on every packet.
+          if (id(last_log_ms) == 0 || now - id(last_log_ms) > 30000) {
+            id(last_log_ms) = now;
+            id(di2_rssi).publish_state(x.get_rssi());
+            std::string hex;
+            for (auto &md : x.get_manufacturer_datas()) {
+              char b[4];
+              for (auto v : md.data) { snprintf(b, sizeof(b), "%02x ", v); hex += b; }
+            }
+            ESP_LOGI("di2", "RD seen: name='%s' mac=%s rssi=%d mfr=%s",
+                     x.get_name().str().c_str(), x.address_str().c_str(), x.get_rssi(), hex.c_str());
+          }
+      - if:
+          condition:
+            lambda: |-
+              if (x.address_uint64() != id(di2).get_address()) return false;
+              // Busy for at most 20 s: if a connection fails without on_disconnect we must not block forever.
+              if (id(busy) && (millis() - id(busy_since_ms)) < 20000) return false;
+              // First read right after wake-up, then every 5 min while the RD keeps advertising (~15 min).
+              if (!id(read_this_wake)) return true;
+              const uint32_t repeat_ms = 5UL * 60UL * 1000UL;
+              return (millis() - id(last_read_ms)) > repeat_ms;
+          then:
+            - lambda: |-
+                id(busy) = true;
+                id(busy_since_ms) = millis();
+            - script.execute: connect_di2
+
+script:
+  # ble_client.connect cannot be used directly inside on_ble_advertise (argument x), hence a script.
+  - id: connect_di2
+    then:
+      - logger.log: "di2: connecting to read battery"
+      - ble_client.connect: di2
+  # Every sensor calls read_done after its read; once all 4 values are in, disconnect right away.
+  - id: read_done
+    mode: queued             # several sensors may finish at the same moment
+    max_runs: 10
+    then:
+      - lambda: 'id(reads)++;'
+      - if:
+          condition:
+            lambda: 'return id(reads) >= 4;'
+          then:
+            - logger.log: "di2: all values read, disconnecting"
+            - ble_client.disconnect: di2
+
+ble_client:
+  - mac_address: !secret di2_mac     # take it from the log line "RD seen: ... mac=..."
+    id: di2
+    auto_connect: false              # never keep a permanent connection
+    on_connect:
+      - lambda: 'id(reads) = 0;'
+      # Safety net: disconnect after 10 s at the latest, even if a read never returns.
+      - delay: 10s
+      - ble_client.disconnect: di2
+    on_disconnect:
+      - lambda: 'id(busy) = false;'
+
+sensor:
+  - platform: ble_client
+    type: characteristic
+    ble_client_id: di2
+    id: di2_battery
+    name: "Di2 battery"
+    service_uuid: '180F'
+    characteristic_uuid: '2A19'
+    unit_of_measurement: "%"
+    device_class: battery
+    state_class: measurement
+    accuracy_decimals: 0
+    notify: false
+    update_interval: never  # read happens immediately after connecting anyway
+    lambda: |-
+      if (x.empty()) return NAN;
+      return (float) x[0];
+    filters:
+      # On disconnect the sensor publishes NAN, which would overwrite the last good value in HA.
+      - filter_out: nan
+    on_value:
+      - lambda: |-
+          id(last_read_ms) = millis();
+          id(read_this_wake) = true;
+          ESP_LOGI("di2", "battery = %.0f %%", x);
+      - script.execute: read_done
+
+  - platform: template
+    id: di2_rssi
+    name: "Di2 RSSI"
+    unit_of_measurement: "dBm"
+    device_class: signal_strength
+    state_class: measurement
+    entity_category: diagnostic
+    update_interval: never
+
+binary_sensor:
+  # Whether the RD is advertising (packet within the last 60 s). HA history shows when it sleeps.
+  - platform: template
+    id: di2_awake
+    name: "Di2 awake"
+    device_class: connectivity
+    lambda: |-
+      return id(last_seen_ms) != 0 && (millis() - id(last_seen_ms)) < 60000;
+
+text_sensor:
+  # Advertised name (e.g. "RDR7150 xxx"); set in on_ble_advertise.
+  - platform: template
+    id: di2_name
+    name: "Di2 name"
+    entity_category: diagnostic
+
+  - platform: ble_client
+    ble_client_id: di2
+    id: di2_manufacturer
+    name: "Di2 manufacturer"
+    service_uuid: '180A'
+    characteristic_uuid: '2A29'
+    update_interval: never
+    entity_category: diagnostic
+    filters:
+      # On disconnect the sensor publishes an empty string: drop it, keep the last value.
+      - lambda: |-
+          if (x.empty()) return {};
+          return x;
+    on_value:
+      - logger.log:
+          format: "di2: manufacturer = %s"
+          args: ['x.c_str()']
+      - script.execute: read_done
+
+  - platform: ble_client
+    ble_client_id: di2
+    id: di2_serial
+    name: "Di2 serial number"
+    service_uuid: '180A'
+    characteristic_uuid: '2A25'
+    update_interval: never
+    entity_category: diagnostic
+    filters:
+      - lambda: |-
+          if (x.empty()) return {};
+          return x;
+    on_value:
+      - logger.log:
+          format: "di2: serial = %s"
+          args: ['x.c_str()']
+      - script.execute: read_done
+
+  - platform: ble_client
+    ble_client_id: di2
+    id: di2_firmware
+    name: "Di2 firmware"
+    service_uuid: '180A'
+    characteristic_uuid: '2A26'
+    update_interval: never
+    entity_category: diagnostic
+    filters:
+      - lambda: |-
+          if (x.empty()) return {};
+          return x;
+    on_value:
+      - logger.log:
+          format: "di2: firmware = %s"
+          args: ['x.c_str()']
+      - script.execute: read_done
