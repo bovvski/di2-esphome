@@ -51,6 +51,4 @@ enter `api_key` from `secrets.yaml`. (Or: Add integration → ESPHome → ESP32 
 
 ## License
 
-[PolyForm Noncommercial 1.0.0](LICENSE.md): free for personal and other noncommercial use;
-commercial use, including selling devices with this firmware, is not permitted without
-permission. ESPHome itself is a separate project under its own licenses.
+[MIT](LICENSE.md). ESPHome itself is a separate project under its own licenses.
