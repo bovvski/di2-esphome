@@ -1,4 +1,4 @@
-# di2-bridge — SPEC v0.2
+# di2-esphome — SPEC v0.2
 
 Goal: an ESP32 reads the battery level of a Shimano 12-speed Di2 rear derailleur whenever
 the derailleur wakes up, and reports it to Home Assistant.

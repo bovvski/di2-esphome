@@ -1,9 +1,9 @@
-# di2-bridge: read Shimano 12-speed Di2 (RD-R7150) battery level over BLE.
+# di2-esphome: read Shimano 12-speed Di2 (RD-R7150) battery level over BLE.
 # Flow: RD wakes up -> ESP32 sees its advertising -> connect -> read 180F/2A19 + 180A -> disconnect.
 # No pairing required.
 
 esphome:
-  name: di2-bridge
+  name: di2-esphome
 
 esp32:
   board: esp32dev          # change to your board (e.g. esp32-c3-devkitm-1, esp32-s3-devkitc-1)

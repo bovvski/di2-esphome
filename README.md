@@ -1,4 +1,4 @@
-# di2-bridge
+# di2-esphome
 
 ESPHome firmware for an ESP32 that reads the battery level of a **Shimano 12-speed Di2** rear
 derailleur and shows it in Home Assistant. No phone, no pairing.
@@ -41,7 +41,7 @@ docker run --rm -it --network host -v "$PWD":/config \
 
 ## Add to Home Assistant
 
-Settings → Devices & services → **di2-bridge** is discovered automatically → Configure →
+Settings → Devices & services → **di2-esphome** is discovered automatically → Configure →
 enter `api_key` from `secrets.yaml`. (Or: Add integration → ESPHome → ESP32 IP, port 6053.)
 
 ## Roadmap
