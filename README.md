@@ -13,6 +13,8 @@ Tested with 105 Di2 (RD-R7150). Not affiliated with or endorsed by Shimano.
 - Diagnostics: firmware version, serial number, manufacturer, name, RSSI.
 - Read-only, no pairing, short connections only (the ESP32 never stays connected).
 
+![Home Assistant device page](docs/images/ha-page.png)
+
 ## Flash
 
 Requirements: an ESP32 with BLE, Docker (or the `esphome` CLI).
