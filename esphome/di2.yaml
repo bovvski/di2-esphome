@@ -60,6 +60,10 @@ esp32_ble_tracker:
   scan_parameters:
     active: true           # tested: active scanning does not keep the RD awake longer (~15 min)
     continuous: true
+    # WiFi and BLE share one radio. Window == interval means BLE uses 100 % of airtime and WiFi
+    # starves (75 % packet loss, HA shows "unavailable"). 30/320 ms = ~10 % for BLE.
+    interval: 320ms
+    window: 30ms
   on_ble_advertise:
     then:
       - lambda: |-
